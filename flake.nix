@@ -36,6 +36,7 @@
     devShells = forAllSystems ({pkgs}: {
       default = pkgs.mkShell rec {
         packages = with pkgs; [
+          usbutils
           pkg-config
           cmake
           ninja

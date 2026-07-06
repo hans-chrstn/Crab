@@ -1,8 +1,9 @@
 use hid_protocol::device::{MouseResponse, deserialize};
 use hidapi::HidApi;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use std::fs;
 use std::io::Write;
-use std::os::unix::net::UnixStream;
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -61,10 +62,12 @@ fn main() {
 
     let mut buf = [0u8; 64];
 
-    let mut qs_socket = UnixStream::connect(QS_SOCKET_PATH).ok();
-    if qs_socket.is_none() {
-        println!("Warning: could not connect to sock");
-    }
+    let _ = fs::remove_file(QS_SOCKET_PATH);
+    let qs_socket = UnixListener::bind(QS_SOCKET_PATH).expect("Could not bind!");
+    qs_socket
+        .set_nonblocking(true)
+        .expect("Failed to set non-blocking");
+    let mut active_socket: Option<UnixStream> = None;
 
     loop {
         for (interface, device) in &bolt_interfaces {
@@ -103,7 +106,15 @@ fn main() {
                                 event: event_variant,
                             };
 
-                            if let Some(sock) = &mut qs_socket {
+                            match qs_socket.accept() {
+                                Ok((sock, _)) => {
+                                    active_socket = Some(sock);
+                                }
+                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                                Err(e) => println!("Connection failed: {}", e),
+                            }
+
+                            if let Some(sock) = &mut active_socket {
                                 if let Ok(json_str) = serde_json::to_string(&payload) {
                                     let msg = format!("{}\n", json_str);
                                     let _ = sock.write_all(msg.as_bytes());

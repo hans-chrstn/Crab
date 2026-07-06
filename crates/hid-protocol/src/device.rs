@@ -37,37 +37,64 @@ pub enum MouseResponse {
     VerticalScroll(i8),
 }
 
-pub fn deserialize(handle: u16, data: &[u8]) -> Result<MouseResponse, HidError> {
-    match handle {
-        0x0028 => {
-            // Gesture
-            if data[0] == 0x40 {
-                return Ok(MouseResponse::GestureButton(true));
+pub fn deserialize(data: &[u8]) -> Result<MouseResponse, HidError> {
+    if data.len() < 2 {
+        return Err(HidError::PacketTooShort {
+            expected: 2,
+            got: data.len(),
+        });
+    }
+
+    match data[0] {
+        0x02 => {
+            if data.len() < 9 {
+                return Err(HidError::PacketTooShort {
+                    expected: 9,
+                    got: data.len(),
+                });
             }
 
-            // Action
-            if data[0] == 0x20 {
+            if data[1] == 0x40 {
+                return Ok(MouseResponse::GestureButton(true));
+            }
+            if data[1] == 0x20 {
                 return Ok(MouseResponse::ActionButton(true));
             }
 
-            // Forward
-            if data[0] == 0x10 {
+            if data[3] == 0x04 {
                 return Ok(MouseResponse::ForwardButton(true));
             }
-
-            // HorizontalScroll
-            if data[6] != 0x00 {
-                return Ok(MouseResponse::HorizontalScroll(data[6] as i8));
+            if data[3] == 0x02 {
+                return Ok(MouseResponse::BackButton(true));
             }
 
-            // VerticalScroll
-            if data[5] != 0x00 {
-                return Ok(MouseResponse::VerticalScroll(data[5] as i8));
+            let vert = data[7] as i8;
+            if vert != 0 {
+                return Ok(MouseResponse::VerticalScroll(vert));
             }
 
-            Err(HidError::InvalidHeader(data[0]))
+            let horiz = data[8] as i8;
+            if horiz != 0 {
+                return Ok(MouseResponse::HorizontalScroll(horiz));
+            }
+
+            if data[1] == 0x00 && data[3] == 0x00 && data[7] == 0x00 && data[8] == 0x00 {
+                return Ok(MouseResponse::GestureButton(false));
+            }
+
+            Err(HidError::InvalidHeader(data[1]))
         }
-        _ => Err(HidError::InvalidHeader(0x00)),
+        0x11 => {
+            if data.len() < 5 {
+                return Err(HidError::PacketTooShort {
+                    expected: 5,
+                    got: data.len(),
+                });
+            }
+
+            Ok(MouseResponse::BatteryLevel(data[4]))
+        }
+        _ => Err(HidError::InvalidHeader(data[0])),
     }
 }
 
@@ -139,14 +166,34 @@ mod tests {
         assert_eq!(res[5], 0xE8);
     }
 
-    // #[test]
-    // fn test_deserialize() {
-    //     let packet = [0x11, 0x00, 0x00, 0x00, 80, 0x00, 0x00];
-    //     let res = deserialize(packet).unwrap();
-    //     assert!(matches!(res, MouseResponse::BatteryLevel(80)));
-    //
-    //     let bad_packet = [0x04, 0x00, 0x00, 0x00, 10, 0x00, 0x00];
-    //     let res = deserialize(bad_packet);
-    //     assert!(matches!(res, Err(HidError::InvalidHeader(0x04))))
-    // }
+    #[test]
+    fn test_deserialize() {
+        let battery_packet = [0x11, 0x00, 0x00, 0x00, 80, 0x00, 0x00];
+        let res = deserialize(&battery_packet).unwrap();
+        assert!(matches!(res, MouseResponse::BatteryLevel(80)));
+
+        let gesture_down = [0x02, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let res = deserialize(&gesture_down).unwrap();
+        assert!(matches!(res, MouseResponse::GestureButton(true)));
+
+        let action_down = [0x02, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let res = deserialize(&action_down).unwrap();
+        assert!(matches!(res, MouseResponse::ActionButton(true)));
+
+        let scroll_up = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0x00];
+        let res = deserialize(&scroll_up).unwrap();
+        assert!(matches!(res, MouseResponse::VerticalScroll(-1)));
+
+        let thumb_right = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let res = deserialize(&thumb_right).unwrap();
+        assert!(matches!(res, MouseResponse::HorizontalScroll(1)));
+
+        let release_packet = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let res = deserialize(&release_packet).unwrap();
+        assert!(matches!(res, MouseResponse::GestureButton(false)));
+
+        let short_packet = [0x02, 0x00];
+        let res = deserialize(&short_packet);
+        assert!(matches!(res, Err(HidError::PacketTooShort { .. })));
+    }
 }

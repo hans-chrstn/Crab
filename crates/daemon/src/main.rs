@@ -1,5 +1,8 @@
+use hid_protocol::device::{MouseResponse, deserialize};
 use hidapi::HidApi;
 use serde::{Deserialize, Serialize};
+use std::io::Write;
+use std::os::unix::net::UnixStream;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -10,6 +13,7 @@ const QS_SOCKET_PATH: &str = "/tmp/crab.sock";
 enum HudEvent {
     Button(bool),
     Scroll(i8),
+    Battery(u8),
 }
 
 #[derive(Serialize, Debug)]
@@ -57,6 +61,11 @@ fn main() {
 
     let mut buf = [0u8; 64];
 
+    let mut qs_socket = UnixStream::connect(QS_SOCKET_PATH).ok();
+    if qs_socket.is_none() {
+        println!("Warning: could not connect to sock");
+    }
+
     loop {
         for (interface, device) in &bolt_interfaces {
             match device.read(&mut buf) {
@@ -65,6 +74,48 @@ fn main() {
                     let hex_string: Vec<String> =
                         packet.iter().map(|b| format!("{:02X}", b)).collect();
                     println!("Interface [{}]: [{}]", interface, hex_string.join(", "));
+                    match deserialize(packet) {
+                        Ok(mouse_resp) => {
+                            let (action, event_variant) = match mouse_resp {
+                                MouseResponse::GestureButton(val) => {
+                                    ("gesture", HudEvent::Button(val))
+                                }
+                                MouseResponse::BatteryLevel(val) => {
+                                    ("battery", HudEvent::Battery(val))
+                                }
+                                MouseResponse::ActionButton(val) => {
+                                    ("action", HudEvent::Button(val))
+                                }
+                                MouseResponse::ForwardButton(val) => {
+                                    ("forward", HudEvent::Button(val))
+                                }
+                                MouseResponse::BackButton(val) => ("back", HudEvent::Button(val)),
+                                MouseResponse::HorizontalScroll(val) => {
+                                    ("horizontal_scroll", HudEvent::Scroll(val))
+                                }
+                                MouseResponse::VerticalScroll(val) => {
+                                    ("Vertical_scroll", HudEvent::Scroll(val))
+                                }
+                            };
+
+                            let payload = HudPayload {
+                                action: action,
+                                event: event_variant,
+                            };
+
+                            if let Some(sock) = &mut qs_socket {
+                                if let Ok(json_str) = serde_json::to_string(&payload) {
+                                    let msg = format!("{}\n", json_str);
+                                    let _ = sock.write_all(msg.as_bytes());
+                                }
+                            }
+                        }
+
+                        Err(_) => {
+                            // TODO: ill think about it
+                            continue;
+                        }
+                    }
                 }
                 _ => {}
             }

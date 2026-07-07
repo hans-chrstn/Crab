@@ -7,8 +7,6 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread::sleep;
 use std::time::Duration;
 
-const QS_SOCKET_PATH: &str = "/tmp/crab.sock";
-
 #[derive(Serialize, Debug)]
 #[serde(tag = "type", content = "value")]
 enum HudEvent {
@@ -22,13 +20,6 @@ struct HudPayload {
     action: &'static str,
     event: HudEvent,
 }
-
-/**
- *
- * This will essentially look like
- * {"action": "example", "event": { "type": "Button", "value": true }}
- *
- */
 
 fn main() {
     println!("Starting Logi Bolt Sniffer...");
@@ -62,26 +53,51 @@ fn main() {
 
     let mut buf = [0u8; 64];
 
-    let _ = fs::remove_file(QS_SOCKET_PATH);
-    let qs_socket = UnixListener::bind(QS_SOCKET_PATH).expect("Could not bind!");
+    let socket_path = if std::path::Path::new("/run/crab").exists() {
+        "/run/crab/api.sock"
+    } else {
+        println!(
+            "Warning: /run/crab does not exist (not running via systemd). Falling back to /tmp/crab.sock"
+        );
+        "/tmp/crab.sock"
+    };
+
+    let _ = fs::remove_file(socket_path);
+    let qs_socket = UnixListener::bind(socket_path).unwrap_or_else(|e| {
+        panic!("Could not bind to {}: {}", socket_path, e);
+    });
+
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(socket_path, fs::Permissions::from_mode(0o666));
+
     qs_socket
         .set_nonblocking(true)
         .expect("Failed to set non-blocking");
-    let mut active_socket: Option<UnixStream> = None;
+
+    let mut active_sockets: Vec<UnixStream> = Vec::new();
 
     loop {
-        for (interface, device) in &bolt_interfaces {
+        match qs_socket.accept() {
+            Ok((sock, _)) => {
+                println!("New client connected!");
+                active_sockets.push(sock);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => println!("Connection failed: {}", e),
+        }
+
+        for (_interface, device) in &bolt_interfaces {
             match device.read(&mut buf) {
                 Ok(res) if res > 0 => {
                     let packet = &buf[..res];
-                    let hex_string: Vec<String> =
-                        packet.iter().map(|b| format!("{:02X}", b)).collect();
-                    println!("Interface [{}]: [{}]", interface, hex_string.join(", "));
                     match deserialize(packet) {
                         Ok(mouse_resp) => {
                             let (action, event_variant) = match mouse_resp {
                                 MouseResponse::GestureButton(val) => {
                                     ("gesture", HudEvent::Button(val))
+                                }
+                                MouseResponse::MiddleClick(val) => {
+                                    ("middle_click", HudEvent::Button(val))
                                 }
                                 MouseResponse::BatteryLevel(val) => {
                                     ("battery", HudEvent::Battery(val))
@@ -106,26 +122,21 @@ fn main() {
                                 event: event_variant,
                             };
 
-                            match qs_socket.accept() {
-                                Ok((sock, _)) => {
-                                    active_socket = Some(sock);
-                                }
-                                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                                Err(e) => println!("Connection failed: {}", e),
-                            }
+                            if let Ok(json_str) = serde_json::to_string(&payload) {
+                                let msg = format!("{}\n", json_str);
 
-                            if let Some(sock) = &mut active_socket {
-                                if let Ok(json_str) = serde_json::to_string(&payload) {
-                                    let msg = format!("{}\n", json_str);
-                                    let _ = sock.write_all(msg.as_bytes());
-                                }
+                                active_sockets.retain_mut(|sock| {
+                                    match sock.write_all(msg.as_bytes()) {
+                                        Ok(_) => true,
+                                        Err(_) => {
+                                            println!("Client disconnected.");
+                                            false
+                                        }
+                                    }
+                                });
                             }
                         }
-
-                        Err(_) => {
-                            // TODO: ill think about it
-                            continue;
-                        }
+                        Err(_) => continue,
                     }
                 }
                 _ => {}

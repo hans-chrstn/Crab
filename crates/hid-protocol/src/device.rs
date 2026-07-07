@@ -33,6 +33,7 @@ pub enum MouseResponse {
     ActionButton(bool),
     ForwardButton(bool),
     BackButton(bool),
+    MiddleClick(bool),
     HorizontalScroll(i8),
     VerticalScroll(i8),
 }
@@ -56,6 +57,9 @@ pub fn deserialize(data: &[u8]) -> Result<MouseResponse, HidError> {
 
             if data[1] == 0x40 {
                 return Ok(MouseResponse::GestureButton(true));
+            }
+            if data[1] == 0x04 {
+                return Ok(MouseResponse::MiddleClick(true));
             }
             if data[1] == 0x20 {
                 return Ok(MouseResponse::ActionButton(true));
@@ -187,6 +191,10 @@ mod tests {
         let thumb_right = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
         let res = deserialize(&thumb_right).unwrap();
         assert!(matches!(res, MouseResponse::HorizontalScroll(1)));
+
+        let middle_click = [0x02, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let res = deserialize(&middle_click).unwrap();
+        assert!(matches!(res, MouseResponse::MiddleClick(true)));
 
         let release_packet = [0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
         let res = deserialize(&release_packet).unwrap();
